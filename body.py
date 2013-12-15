@@ -1,5 +1,5 @@
 import HTMLParser,re,urllib,json,random,requests,datetime,socket,os,sys,HTMLParser,oembed,urllib2,urllib,threading;from ircutils import format
-import xml.etree.ElementTree as ET
+import lxml.etree as etree
 import lxml.html
 
 self.bannedhosts=self.config.getBannedHosts()
@@ -15,7 +15,7 @@ if hasattr(self, 'bannedhosts') and hasattr(event, 'host') and (event.host is no
 
 
 #Invite Responder
-if event.command=="INVITE":
+if event.command == "INVITE":
     self.join_channel(event.params[0])
  
 #AAAAAAAA
@@ -24,8 +24,8 @@ if event.command in ['PRIVMSG']:
     event.command=event.message.split(' ')[0]
 
     steamNick = False
-    if (self.config.raribot):
-        if (event.command[-1:] == ':' and event.source == 'S'):
+    if self.config.raribot:
+        if event.command[-1:] == ':' and event.source == 'S':
             try: event.command = event.message.split(' ', 2)[1]
             except: event.command = ''
             try: event.params=event.message.split(' ',2)[2]
@@ -34,12 +34,44 @@ if event.command in ['PRIVMSG']:
             try:   event.params=event.message.split(' ',1)[1]
             except:event.params=''
     else:
-        x=re.compile('^<.*> ')
-        if len(x.findall(event.message)) > 0:
+        x=re.compile('^<(.*) ?> ')
+        matches=x.findall(event.message)
+        if len(matches) > 0:
+            event.source = matches[0]
             event.message = x.sub('', event.message)
             event.command = event.message.split(' ')[0]
         try:   event.params=event.message.split(' ',1)[1]
         except:event.params=''
+
+    #substitution
+    substmatch=re.compile('(?:\s|^)s/([^/]+)/([^/]+)/?')
+    substmatches=substmatch.findall(event.message)
+    if len(substmatches) > 0:
+        try:
+            usernamematch = re.findall('^[a-zA-Z0-9_\-\\\[\]\{}\^`\|]+', event.message)
+            if len(usernamematch) > 0 and not event.message[:2].lower() == 's/':
+                username = usernamematch[0]
+                newmessage = self.lastmessage[username].replace(substmatches[0][0], substmatches[0][1])
+                if newmessage != self.lastmessage[username]:
+                    self.send_message(event.respond, '{} thinks {} meant to say: "{}"'.format(event.source, username, newmessage))
+                else:
+                    self.send_message(event.respond, "Couldn't find anything to replace")
+            else:
+                username = event.source
+                newmessage = self.lastmessage[username].replace(substmatches[0][0], substmatches[0][1])
+                if newmessage != self.lastmessage[username]:
+                    self.send_message(event.respond, '{} meant to say: "{}"'.format(event.source, newmessage))
+                else:
+                    self.send_message(event.respond, "Couldn't find anything to replace")
+
+        except:
+            self.send_message(event.respond, "Couldn't find anything to replace")
+            raise
+
+    #required for substitution
+    if not hasattr(self, 'lastmessage'):
+        self.lastmessage = requests.structures.CaseInsensitiveDict()
+    self.lastmessage[event.source]=event.message
 
     #Select Roller
     if event.command in self._prefix('select') and len(event.params)>0:
@@ -257,7 +289,10 @@ if event.command in ['PRIVMSG']:
             rs="Usage: ~rs <terms> Used to search for results on reddit, can narrow down to sub or user with /u/<user> or /r/<subreddit>",
             imply="Usage: ~imply <text> Used to imply things.",
             dns="Usage: ~dns <domain> Used to check which IPs are associated with a DNS listing",
-            imdb="Usage: ~imdb <film> Used to search IMDB for the listing for a film.",
+            movie="Usage: ~movie <film> Used to search trakt for the listing for a film.",
+            tpb="Usage: ~tpb <query> Used to search the pirate bay for the most seeded entry for a given query.",
+            tv="Usage: ~tv <show> Used to search trakt for the listing for a tv show.",
+            episode="Usage: ~episode <film> Used to search trakt for the listing for an episode.",
             implying="Usage: ~implying <implications> turns text green and adds >Implying",
             clop="Usage: ~clop <optional extra tags> Searches e621 for a random image with the tags rating:e and my_little_pony",
             truerandjur="Usage: ~truerandjur <number> Used to post random imgur pictures, from randomly generated IDs, takes a little while to find images so be patient, <number> defines the number of results with a max of 10",
@@ -281,6 +316,10 @@ if event.command in ['PRIVMSG']:
                 response
             )
 
+    if event.command.lower() in self._prefix('weather'):
+        event.command = self.config.prefixes[0] + 'wolf'
+        event.params = 'weather ' + event.params
+
     #Wolfram Alpha
     if event.command.lower() in self._prefix('wolf'):
         try:
@@ -290,20 +329,22 @@ if event.command in ['PRIVMSG']:
                     appid=self.config.wolframKey
                     )
                 ).text
-            results =[]
-            root = ET.fromstring(s.encode('utf-8', errors='replace'))
-            for child in root.findall('pod'):
-                if child.attrib.has_key("primary"):
-                    if child.attrib["primary"] == 'true':
-                        results.append(child.find('subpod').find('plaintext').text.replace('\n', ' '))
+
+            x=etree.fromstring(s.encode('UTF-8', 'replace'))
+            d=x.xpath('//pod[@primary="true"]/subpod/plaintext')
+
+            results=[o.text.replace('\n', '').encode('utf-8', 'replace') for o in d]
 
             if len(results) < 1:
                 responseStr = "No results available, try the query page:"
             else:
-                responseStr = '; '.join(results).encode('utf-8', errors='replace')
+                responseStr = '; '.join(results)
+
             if len(responseStr) > 384:
                 responseStr = responseStr[:384] + "..."
+
             responseStr += " http://www.wolframalpha.com/input/?i={}".format(urllib.quote(event.params, ''))
+
             self.send_message(
                 event.respond,
                 responseStr
@@ -419,7 +460,7 @@ if event.command in ['PRIVMSG']:
             wait=datetime.datetime(year=2013, month=11, day=23, hour=15, minute=30, tzinfo=UTC()) - datetime.datetime.now(LocalTZ())
         else:
             airdate=datetime.datetime.now(LocalTZ()) + timedelta((12 - datetime.datetime.now(LocalTZ()).weekday()) % 7)
-            wait = datetime.datetime(year=airdate.year, month=airdate.month, day=airdate.day, hour=15, minute=30, tzinfo=UTC()) - datetime.datetime.now(LocalTZ())
+            wait = datetime.datetime(year=airdate.year, month=airdate.month, day=airdate.day, hour=14, minute=30, tzinfo=UTC()) - datetime.datetime.now(LocalTZ())
             
         self.send_message(
             event.respond,
@@ -519,7 +560,7 @@ if event.command in ['PRIVMSG']:
         emotes.extend([e[0] for e in matches if e[0] != ''])
         response = ""
         for x in emotes:
-            response += 'http://comeinside.org/emote/{}/ '.format(x.replace('!', '_excl_').replace(':', '_colon_'))
+            response += 'http://comeinside.org/emote/{}/ '.format(urllib.quote(x))
         self.send_message(event.respond, response.rstrip())
 
     if event.command.lower() in self._prefix('es') and not self.config.raribot:
@@ -564,38 +605,41 @@ if event.command in ['PRIVMSG']:
             self.send_message(event.respond, "YOU'RE NOT THE BOSS OF ME!")
 
 
-    #IMDB Search
-    if event.command.lower() in self._prefix('imdb'):
+    #Movie Search
+    if event.command.lower() in self._prefix('movie'):
         try:
             j=requests.get(
-                'http://mymovieapi.com/',
-                params=dict(
-                    title=event.params,
-                    type='json'
-                )
+                'http://api.trakt.tv/search/movies.json/{}/{}'.format(self.config.traktKey, event.params), 
+                headers={"User-Agent": 'Berry Punch IRC Bot'}
             ).json()[0]
+
+
+            movieid = ''
+            if j.has_key('imdb_id') and j['imdb_id'] != '': 
+                movieid = j['imdb_id']
+            else: 
+                if j.has_key('tvdb_id'): 
+                    movieid = j['tvdb_id']
+            if movieid == '':
+                raise Exception('No results')
+
+            j=requests.get(
+                'http://api.trakt.tv/movie/summary.json/{}/{}'.format(self.config.traktKey, movieid),
+                headers={"User-Agent": 'Berry Punch IRC Bot'}
+            ).json()
+
             out = []
             if j.has_key('title'): out.append(j['title'])
             if j.has_key('genres'): out.append(', '.join(j['genres'][:3]))
-            if j.has_key('actors'): out.append(', '.join(j['actors'][:3]))
-            if j.has_key('rating'): out.append(str(j['rating']))
+            if j.has_key('people'):
+               if j['people'].has_key('actors'):
+                  out.append(', '.join([s['name'] for s in j['people']['actors'][:3]]))
+            if j.has_key('overview'): out.append(j['overview'][:100] + '...')
+            if j.has_key('ratings'):
+               if j['ratings'].has_key('percentage'): 
+                   out.append(str(j['ratings']['percentage']) + '%')
             if j.has_key('year'): out.append(str(j['year']))
-            if j.has_key('imdb_url'): out.append(j['imdb_url'])
-
-            try:
-                title = j['title']
-                tpb = requests.get("http://thepiratebay.sx/search/{}/0/7/0".format(title)).text
-                tpbHTML = lxml.html.fromstring(tpb)
-                tpbHTML.make_links_absolute("http://thepiratebay.sx")
-                links = tpbHTML.iterlinks()
-                tpbLink = '';
-                while tpbLink == '':
-                    currentLink = next(links)[2]
-                    if currentLink.startswith("http://thepiratebay.sx/torrent/"):
-                        tpbLink = currentLink
-                out.append(tpbLink[:tpbLink.rfind('/')+1])
-            except:
-                pass
+            if j.has_key('url'): out.append(j['url'])
 
 
             self.send_message(
@@ -608,6 +652,151 @@ if event.command in ['PRIVMSG']:
                 "Could not find the specified film, please try again."
             )
             raise
+
+    #TV Show Search
+    if event.command.lower() in self._prefix('tv'):
+        try:
+            j=requests.get(
+                'http://api.trakt.tv/search/shows.json/{}/{}'.format(self.config.traktKey, event.params), 
+                headers={"User-Agent": 'Berry Punch IRC Bot'}
+            ).json()[0]
+
+
+            showid = ''
+            if j.has_key('imdb_id') and j['imdb_id'] != '': 
+                showid = j['imdb_id']
+            else: 
+                if j.has_key('tvdb_id'): 
+                    showid = j['tvdb_id']
+            if showid == '':
+                raise Exception('No results')
+
+            j=requests.get(
+                'http://api.trakt.tv/show/summary.json/{}/{}'.format(self.config.traktKey, showid),
+                headers={"User-Agent": 'Berry Punch IRC Bot'}
+            ).json()
+
+            out = []
+            if j.has_key('title'): out.append(j['title'])
+            if j.has_key('genres'): out.append(', '.join(j['genres'][:3]))
+            if j.has_key('people'):
+               if j['people'].has_key('actors'):
+                  out.append(', '.join([s['name'] for s in j['people']['actors'][:3]]))
+            if j.has_key('overview'): out.append(j['overview'][:100] + '...')
+            if j.has_key('ratings'):
+               if j['ratings'].has_key('percentage'): 
+                   out.append(str(j['ratings']['percentage']) + '%')
+            if j.has_key('year'): out.append(str(j['year']))
+            if j.has_key('url'): out.append(j['url'])
+
+
+            self.send_message(
+                event.respond,
+                (' | '.join(out)).encode('utf-8','replace')
+            )
+        except:
+            self.send_message(
+                event.respond,
+                "Could not find the specified film, please try again."
+            )
+            raise
+
+    #TV Episode Search
+    if event.command.lower() in self._prefix('episode'):
+        try:
+            j=requests.get(
+                'http://api.trakt.tv/search/episodes.json/{}/{}'.format(self.config.traktKey, event.params), 
+                headers={"User-Agent": 'Berry Punch IRC Bot'}
+            ).json()[0]
+
+
+            showid = ''
+            if j.has_key('show'):
+                if j['show'].has_key('imdb_id') and j['show']['imdb_id'] != '': 
+                    showid = j['show']['imdb_id']
+                else: 
+                    if j['show'].has_key('tvdb_id'): 
+                        showid = j['show']['tvdb_id']
+            if showid == '':
+                raise Exception('No results')
+
+            season = ''
+            episode = ''
+            if j.has_key('episode'):
+                if j['episode'].has_key('season'): 
+                    season = j['episode']['season']
+                if j['episode'].has_key('episode'): 
+                    episode = j['episode']['episode']
+            if season == '' or episode == '':
+                raise Exception('No results')
+
+            j=requests.get(
+                'http://api.trakt.tv/show/episode/summary.json/{}/{}/{}/{}'.format(self.config.traktKey, showid, season, episode),
+                headers={"User-Agent": 'Berry Punch IRC Bot'}
+            ).json()
+
+            out = []
+            if j.has_key('show'):
+                if j['show'].has_key('title'): out.append(j['show']['title'])
+                if j['show'].has_key('genres'): out.append(', '.join(j['show']['genres'][:3]))
+            if j.has_key('episode'):
+                if j['episode'].has_key('title'): out.append(j['episode']['title'])
+                if j['episode'].has_key('season'): out.append("Season " + str(j['episode']['season']))
+                if j['episode'].has_key('number'): out.append("Episode " + str(j['episode']['number']))
+                if j['episode'].has_key('overview'): out.append(j['episode']['overview'][:100] + '...')
+                if j['episode'].has_key('ratings'):
+                   if j['episode']['ratings'].has_key('percentage'): 
+                       out.append(str(j['episode']['ratings']['percentage']) + '%')
+                if j['episode'].has_key('url'): out.append(j['episode']['url'])
+
+
+            self.send_message(
+                event.respond,
+                (' | '.join(out)).encode('utf-8','replace')
+            )
+        except:
+            self.send_message(
+                event.respond,
+                "Could not find the specified episode, please try again."
+            )
+            raise
+
+    #IMDB Search
+    if event.command.lower() in self._prefix('tpb'):
+        try:
+            tpb = requests.get("http://thepiratebay.sx/search/{}/0/7/0".format(event.params)).text
+            tpbHTML = lxml.html.fromstring(tpb)
+            tpbHTML.make_links_absolute("http://thepiratebay.sx")
+            links = tpbHTML.iterlinks()
+            tpbLink = ''
+            while tpbLink == '':
+                currentLink = next(links)[2]
+                if currentLink.startswith("http://thepiratebay.sx/torrent/"):
+                    tpbLink = currentLink
+            self.send_message(event.respond, tpbLink[:tpbLink.rfind('/')+1])
+        except:
+            self.send_message(event.respond, "No results, or TPB is down")
+
+    #Bullshit ensues, MAL is now an alias for a google search.
+    if event.command.lower() in self._prefix('mal'):
+        try:
+            j=requests.get(
+                'https://ajax.googleapis.com/ajax/services/search/web',
+                params=dict(
+                    v="1.0",
+                    q=event.params + " site:myanimelist.net"
+                )
+            ).json()[u'responseData'][u'results'][0]
+            self.send_message(
+                event.respond,
+                u'{}: {}'.format(
+                    HTMLParser.HTMLParser().unescape(j[u'titleNoFormatting']),
+                    j[u'unescapedUrl']
+                ).encode('utf-8','replace')
+            )
+        except:
+            print "ERROR\n",traceback.print_tb(sys.exc_info()[2]),"\nERROREND"
+            self.send_message(event.respond,"No results")
 
     #Implying
     if event.command.lower() in self._prefix('implying'):
